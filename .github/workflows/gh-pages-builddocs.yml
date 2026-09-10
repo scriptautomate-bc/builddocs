@@ -2,9 +2,23 @@
 name: Build and Deploy Sphinx site for support Salt ref docs to pages
 
 on:
+  # Builds + deploys. branches: ['*'] previously here never actually matched
+  # slash-containing branch names (GitHub Actions branch globs treat '*' as
+  # "no slashes"), so only merges to main ever triggered a run in practice --
+  # made explicit here since that's genuinely the only ref that should build.
   push:
     branches:
-      - '*'
+      - main
+
+  # Validates every contributor's PR -- including from forks -- without
+  # requiring branch-name gymnastics. Runs with a read-only, secret-less
+  # token when opened from a fork (GitHub's default for `pull_request`, as
+  # opposed to `pull_request_target`), so it's safe to leave unrestricted.
+  # The deploy job still only ever fires on `refs/heads/main`, which a PR's
+  # ref never is, so this can't trigger an accidental Pages deploy.
+  pull_request:
+    branches:
+      - main
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
