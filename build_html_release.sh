@@ -18,8 +18,14 @@ fi
 . ./build_env.sh
 . ./build_html_common.sh
 
-curl -fsSL -o docs-html.tar.xz \
-	"https://github.com/saltstack/salt/releases/download/v${RELEASE_VERSION}/salt-${RELEASE_VERSION}-docs-html.tar.xz"
+# The builddocs container has no curl, but does have python3.
+python3 -c "
+import urllib.request
+urllib.request.urlretrieve(
+    'https://github.com/saltstack/salt/releases/download/v${RELEASE_VERSION}/salt-${RELEASE_VERSION}-docs-html.tar.xz',
+    'docs-html.tar.xz',
+)
+"
 
 rm -rf ./release_html
 mkdir -p ./release_html
