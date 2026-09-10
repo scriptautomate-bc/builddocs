@@ -1,6 +1,7 @@
 #!/bin/bash -ex
-# Builds HTML docs from source. Used for master only -- released versions
-# are consumed as pre-built tarballs by build_html_release.sh.
+# Builds HTML docs from source. Used for any docs_targets.json entry with
+# no release_version (e.g. master, or an unreleased branch) -- targets with
+# a release_version are consumed as pre-built tarballs by build_html_release.sh.
 
 if [ -z "${WEBSITE_RELEASE}" ]
 then

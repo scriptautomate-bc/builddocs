@@ -6,9 +6,11 @@ tree, skips any that are missing (they self-heal once the corresponding
 release exists), and writes a <sitemapindex> whose <lastmod> per child is
 the max <lastmod> found inside that child.
 
-/en/3008/sitemap.xml is deliberately excluded: it is a duplicate of
-/en/latest/, which is disallowed in robots.txt in favor of the durable
-/en/latest/ URL, so it is kept out of the sitemap index too.
+The per-major children (en/<major>/sitemap.xml) are passed in on argv,
+computed by `docs_targets.py sitemap-majors` -- that command already
+excludes the current latest major, since it's represented by
+en/latest/sitemap.xml (disallowed in robots.txt in favor of the durable
+/en/latest/ URL) instead of its own /en/<major>/ entry.
 """
 import sys
 from pathlib import Path
@@ -17,12 +19,10 @@ from xml.etree import ElementTree as ET
 SITEMAP_NS = "http://www.sitemaps.org/schemas/sitemap/0.9"
 BASE_URL = "https://docs.saltproject.io"
 
-CHILDREN = [
+FIXED_CHILDREN = [
     "salt/user-guide/en/latest/sitemap.xml",
     "salt/install-guide/en/latest/sitemap.xml",
     "en/latest/sitemap.xml",
-    "en/3006/sitemap.xml",
-    "en/master/sitemap.xml",
 ]
 
 
@@ -37,15 +37,21 @@ def max_lastmod(sitemap_path):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} <docs-saltproject-io-dir>", file=sys.stderr)
+    if len(sys.argv) < 2:
+        print(
+            f"usage: {sys.argv[0]} <docs-saltproject-io-dir> [major ...]",
+            file=sys.stderr,
+        )
         return 1
 
     root_dir = Path(sys.argv[1])
+    majors = sys.argv[2:]
+    children = FIXED_CHILDREN + [f"en/{major}/sitemap.xml" for major in majors]
+
     ET.register_namespace("", SITEMAP_NS)
     sitemapindex = ET.Element(f"{{{SITEMAP_NS}}}sitemapindex")
 
-    for rel_path in CHILDREN:
+    for rel_path in children:
         sitemap_path = root_dir / rel_path
         if not sitemap_path.is_file():
             print(f"NOTICE: skipping missing sitemap {rel_path}")
