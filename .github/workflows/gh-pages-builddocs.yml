@@ -36,7 +36,7 @@ jobs:
           submodules: 'true'
       - name: Checkout and prep Salt
         run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
+          git clone --filter=blob:none -b "${DOC_BRANCH}" https://github.com/saltstack/salt
           sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
           sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
           sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
@@ -106,32 +106,16 @@ jobs:
     container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
     env:
       BUILD_TYPE: latest
-      DOC_BRANCH: 'v3008.2'
       WEBSITE_POINT_RELEASE: '3008.2'
       WEBSITE_RELEASE: latest
+      RELEASE_VERSION: '3008.2'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: 'true'
-      - name: Checkout and prep Salt
-        run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
-          sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^rpm-vercmp==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-      - name: Install Python prereqs
-        run: |
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install -U pip setuptools wheel
-          pip install -r salt/requirements/static/ci/py3.10/docs.lock && pip install -r salt/requirements/static/pkg/py3.10/linux.lock
-          pip install jaraco.text==3.14.0
       - name: Build docs
-        run: |
-          source venv/bin/activate
-          ./build_html.sh
+        run: ./build_html_release.sh
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -186,32 +170,16 @@ jobs:
     container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
     env:
       BUILD_TYPE: latest
-      DOC_BRANCH: 'v3008.2'
       WEBSITE_POINT_RELEASE: '3008.2'
       WEBSITE_RELEASE: '3008'
+      RELEASE_VERSION: '3008.2'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: 'true'
-      - name: Checkout and prep Salt
-        run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
-          sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^rpm-vercmp==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-      - name: Install Python prereqs
-        run: |
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install -U pip setuptools wheel
-          pip install -r salt/requirements/static/ci/py3.10/docs.lock && pip install -r salt/requirements/static/pkg/py3.10/linux.lock
-          pip install jaraco.text==3.14.0
       - name: Build docs
-        run: |
-          source venv/bin/activate
-          ./build_html.sh
+        run: ./build_html_release.sh
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -226,35 +194,16 @@ jobs:
     container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
     env:
       BUILD_TYPE: previous
-      DOC_BRANCH: 'v3006.27'
       WEBSITE_POINT_RELEASE: '3006.27'
       WEBSITE_RELEASE: '3006'
+      RELEASE_VERSION: '3006.27'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: 'true'
-      - name: Checkout and prep Salt
-        run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
-          find salt/requirements -name "linux*" | sort
-          sed -i "s:^timelib==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^rpm-vercmp==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-      - name: Install Python prereqs
-        run: |
-          apt update && apt install libffi-dev -y
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install -U pip setuptools wheel
-          pip install -r salt/requirements/static/ci/py3.10/docs.lock && pip install -r salt/requirements/static/pkg/py3.10/linux.lock
-          pip install jaraco.text==3.14.0
       - name: Build docs
-        run: |
-          source venv/bin/activate
-          ./build_html.sh
+        run: ./build_html_release.sh
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -318,6 +267,8 @@ jobs:
       - previous-3006-pdf
     if: success()
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Download artifacts
         uses: actions/download-artifact@v4
       - name: Display all downloaded archives/artifacts
@@ -350,6 +301,12 @@ jobs:
           Moving built docs to expected docs file paths..."
           mv *-html/* docs-saltproject-io/en/
           mv *-pdf/pdf/* docs-saltproject-io/en/pdf/
+      - name: Make en/latest self-consistent (durable canonical URL)
+        run: |
+          . ./build_env.sh
+          sed -i "s#/en/${LATEST_RELEASE%%.*}/#/en/latest/#g" docs-saltproject-io/en/latest/sitemap.xml
+          grep -rl 'rel="canonical"' docs-saltproject-io/en/latest/ | xargs -r \
+            sed -i "s#https://docs.saltproject.io/en/${LATEST_RELEASE%%.*}/#https://docs.saltproject.io/en/latest/#g"
       - name: Download salt-install-guide and salt-user-guide
         run: |
           touch checksums.txt
@@ -363,6 +320,17 @@ jobs:
           tar xvf salt-user-guide.tar.gz
           mv salt-install-guide docs-saltproject-io/salt/install-guide/en/latest
           mv salt-user-guide docs-saltproject-io/salt/user-guide/en/latest
+      - name: Generate root sitemap index
+        run: python3 gen_sitemap_index.py docs-saltproject-io
+      - name: Generate robots.txt
+        run: |
+          cat > docs-saltproject-io/robots.txt <<'EOF'
+          User-agent: *
+          Allow: /
+          Disallow: /en/master/
+          Disallow: /en/3008/
+          Sitemap: https://docs.saltproject.io/sitemap.xml
+          EOF
       - name: Create tarball of docs
         run: |
           tar cvzf docs-saltproject-io.tar.gz docs-saltproject-io
