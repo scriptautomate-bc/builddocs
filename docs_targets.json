@@ -1,0 +1,7 @@
+{
+  "targets": [
+    { "major": "3006", "release_version": "3006.27" },
+    { "major": "3008", "release_version": "3008.2" },
+    { "major": "master", "doc_branch": "master" }
+  ]
+}

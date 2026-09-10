@@ -2,9 +2,23 @@
 name: Build and Deploy Sphinx site for support Salt ref docs to pages
 
 on:
+  # Builds + deploys. branches: ['*'] previously here never actually matched
+  # slash-containing branch names (GitHub Actions branch globs treat '*' as
+  # "no slashes"), so only merges to main ever triggered a run in practice --
+  # made explicit here since that's genuinely the only ref that should build.
   push:
     branches:
-      - '*'
+      - main
+
+  # Validates every contributor's PR -- including from forks -- without
+  # requiring branch-name gymnastics. Runs with a read-only, secret-less
+  # token when opened from a fork (GitHub's default for `pull_request`, as
+  # opposed to `pull_request_target`), so it's safe to leave unrestricted.
+  # The deploy job still only ever fires on `refs/heads/main`, which a PR's
+  # ref never is, so this can't trigger an accidental Pages deploy.
+  pull_request:
+    branches:
+      - main
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -21,54 +35,86 @@ defaults:
     shell: bash
 
 jobs:
-  # master HTML
-  master-html:
+  # Reads docs_targets.json and derives the per-target build matrix plus the
+  # current latest major version. Every other job is driven off this one --
+  # adding/retiring a Salt release is a docs_targets.json edit, not a
+  # workflow edit.
+  compute-targets:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      latest_major: ${{ steps.targets.outputs.latest_major }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Compute targets
+        id: targets
+        run: |
+          echo "matrix=$(python3 docs_targets.py matrix)" >> "$GITHUB_OUTPUT"
+          echo "latest_major=$(python3 docs_targets.py latest-major)" >> "$GITHUB_OUTPUT"
+
+  html:
+    needs: compute-targets
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.compute-targets.outputs.matrix) }}
     runs-on: ubuntu-24.04
     container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
     env:
-      DOC_BRANCH: master
-      WEBSITE_POINT_RELEASE: master
-      WEBSITE_RELEASE: master
+      WEBSITE_RELEASE: ${{ matrix.target.website_release }}
+      WEBSITE_POINT_RELEASE: ${{ matrix.target.website_point_release }}
+      RELEASE_VERSION: ${{ matrix.target.release_version }}
+      DOC_BRANCH: ${{ matrix.target.html_doc_branch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: 'true'
+      - name: Build docs from release tarball
+        if: matrix.target.release_version != null
+        run: ./build_html_release.sh
       - name: Checkout and prep Salt
+        if: matrix.target.release_version == null
         run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
+          git clone --filter=blob:none -b "${DOC_BRANCH}" https://github.com/saltstack/salt
           sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
           sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
           sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
           sed -i "s:^rpm-vercmp==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
       - name: Install Python prereqs
+        if: matrix.target.release_version == null
         run: |
           python3 -m venv venv
           source venv/bin/activate
           pip install -U pip setuptools wheel
           pip install -r salt/requirements/static/ci/py3.10/docs.lock && pip install -r salt/requirements/static/pkg/py3.10/linux.lock
           pip install jaraco.text==3.14.0
-      - name: Build docs
+      - name: Build docs from source
+        if: matrix.target.release_version == null
         run: |
           source venv/bin/activate
           ./build_html.sh
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: master-html
+          name: ${{ matrix.target.website_release }}-html
           path: ./public/
           if-no-files-found: error
           retention-days: 1
 
-
-  # master PDF
-  master-pdf:
+  # PDFs have no release asset, so every target always builds from source,
+  # regardless of how its HTML was produced.
+  pdf:
+    needs: compute-targets
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.compute-targets.outputs.matrix) }}
     runs-on: ubuntu-24.04
     container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
     env:
-      DOC_BRANCH: master
-      WEBSITE_POINT_RELEASE: master
-      WEBSITE_RELEASE: master
+      WEBSITE_RELEASE: ${{ matrix.target.website_release }}
+      WEBSITE_POINT_RELEASE: ${{ matrix.target.website_point_release }}
+      DOC_BRANCH: ${{ matrix.target.pdf_doc_branch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,213 +141,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: master-pdf
-          path: ./public/
-          if-no-files-found: error
-          retention-days: 1
-
-  # latest HTML
-  latest-html:
-    runs-on: ubuntu-24.04
-    container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
-    env:
-      BUILD_TYPE: latest
-      DOC_BRANCH: 'v3008.2'
-      WEBSITE_POINT_RELEASE: '3008.2'
-      WEBSITE_RELEASE: latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: 'true'
-      - name: Checkout and prep Salt
-        run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
-          sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^rpm-vercmp==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-      - name: Install Python prereqs
-        run: |
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install -U pip setuptools wheel
-          pip install -r salt/requirements/static/ci/py3.10/docs.lock && pip install -r salt/requirements/static/pkg/py3.10/linux.lock
-          pip install jaraco.text==3.14.0
-      - name: Build docs
-        run: |
-          source venv/bin/activate
-          ./build_html.sh
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: latest-html
-          path: ./public/
-          if-no-files-found: error
-          retention-days: 1
-
-  # lastest PDF
-  latest-pdf:
-    runs-on: ubuntu-24.04
-    container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
-    env:
-      BUILD_TYPE: latest
-      DOC_BRANCH: 'v3008.2'
-      WEBSITE_POINT_RELEASE: '3008.2'
-      WEBSITE_RELEASE: latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: 'true'
-      - name: Checkout and prep Salt
-        run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
-          sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^rpm-vercmp==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-      - name: Install Python prereqs
-        run: |
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install -U pip setuptools wheel
-          pip install -r salt/requirements/static/ci/py3.10/docs.lock && pip install -r salt/requirements/static/pkg/py3.10/linux.lock
-          pip install jaraco.text==3.14.0
-      - name: Build docs
-        run: |
-          source venv/bin/activate
-          ./build_pdf.sh
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: latest-pdf
-          path: ./public/
-          if-no-files-found: error
-          retention-days: 1
-
-  # latest-sts HTML
-  latest-3008-html:
-    runs-on: ubuntu-24.04
-    container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
-    env:
-      BUILD_TYPE: latest
-      DOC_BRANCH: 'v3008.2'
-      WEBSITE_POINT_RELEASE: '3008.2'
-      WEBSITE_RELEASE: '3008'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: 'true'
-      - name: Checkout and prep Salt
-        run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
-          sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^rpm-vercmp==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-      - name: Install Python prereqs
-        run: |
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install -U pip setuptools wheel
-          pip install -r salt/requirements/static/ci/py3.10/docs.lock && pip install -r salt/requirements/static/pkg/py3.10/linux.lock
-          pip install jaraco.text==3.14.0
-      - name: Build docs
-        run: |
-          source venv/bin/activate
-          ./build_html.sh
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: 3008-html
-          path: ./public/
-          if-no-files-found: error
-          retention-days: 1
-
-  # previous-lts html
-  previous-3006-html:
-    runs-on: ubuntu-24.04
-    container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
-    env:
-      BUILD_TYPE: previous
-      DOC_BRANCH: 'v3006.27'
-      WEBSITE_POINT_RELEASE: '3006.27'
-      WEBSITE_RELEASE: '3006'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: 'true'
-      - name: Checkout and prep Salt
-        run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
-          find salt/requirements -name "linux*" | sort
-          sed -i "s:^timelib==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^rpm-vercmp==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-      - name: Install Python prereqs
-        run: |
-          apt update && apt install libffi-dev -y
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install -U pip setuptools wheel
-          pip install -r salt/requirements/static/ci/py3.10/docs.lock && pip install -r salt/requirements/static/pkg/py3.10/linux.lock
-          pip install jaraco.text==3.14.0
-      - name: Build docs
-        run: |
-          source venv/bin/activate
-          ./build_html.sh
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: 3006-html
-          path: ./public/
-          if-no-files-found: error
-          retention-days: 1
-
-  # previous-lts PDF
-  previous-3006-pdf:
-    runs-on: ubuntu-24.04
-    container: ghcr.io/saltstack/salt-ci-containers/builddocs:latest
-    env:
-      BUILD_TYPE: previous
-      DOC_BRANCH: 'v3006.27'
-      WEBSITE_POINT_RELEASE: '3006.27'
-      WEBSITE_RELEASE: '3006'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: 'true'
-      - name: Checkout and prep Salt
-        run: |
-          git clone --depth 1 -b "${DOC_BRANCH}" https://github.com/saltstack/salt
-          find salt/requirements -name "linux*" | sort
-          sed -i "s:^timelib==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^cffi==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^contextvars==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^immutables==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-          sed -i "s:^rpm-vercmp==.*::g" salt/requirements/static/pkg/py3.10/linux.lock
-      - name: Install Python prereqs
-        run: |
-          apt update && apt install libffi-dev -y
-          python3 -m venv venv
-          source venv/bin/activate
-          pip install -U pip setuptools wheel
-          pip install -r salt/requirements/static/ci/py3.10/docs.lock && pip install -r salt/requirements/static/pkg/py3.10/linux.lock
-          pip install jaraco.text==3.14.0
-      - name: Build docs
-        run: |
-          source venv/bin/activate
-          ./build_pdf.sh
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: 3006-pdf
+          name: ${{ matrix.target.website_release }}-pdf
           path: ./public/
           if-no-files-found: error
           retention-days: 1
@@ -309,15 +149,13 @@ jobs:
   single-tarball-site-archive:
     runs-on: ubuntu-24.04
     needs:
-      - master-html
-      - master-pdf
-      - latest-html
-      - latest-pdf
-      - latest-3008-html
-      - previous-3006-html
-      - previous-3006-pdf
+      - compute-targets
+      - html
+      - pdf
     if: success()
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Download artifacts
         uses: actions/download-artifact@v4
       - name: Display all downloaded archives/artifacts
@@ -350,6 +188,13 @@ jobs:
           Moving built docs to expected docs file paths..."
           mv *-html/* docs-saltproject-io/en/
           mv *-pdf/pdf/* docs-saltproject-io/en/pdf/
+      - name: Create en/latest as a rewritten copy of the newest major release
+        run: |
+          LATEST_MAJOR="${{ needs.compute-targets.outputs.latest_major }}"
+          rm -rf docs-saltproject-io/en/latest
+          cp -a "docs-saltproject-io/en/${LATEST_MAJOR}" docs-saltproject-io/en/latest
+          grep -rl "/en/${LATEST_MAJOR}/" docs-saltproject-io/en/latest | xargs -r \
+            sed -i "s#/en/${LATEST_MAJOR}/#/en/latest/#g"
       - name: Download salt-install-guide and salt-user-guide
         run: |
           touch checksums.txt
@@ -363,6 +208,20 @@ jobs:
           tar xvf salt-user-guide.tar.gz
           mv salt-install-guide docs-saltproject-io/salt/install-guide/en/latest
           mv salt-user-guide docs-saltproject-io/salt/user-guide/en/latest
+      - name: Generate root sitemap index
+        run: |
+          # shellcheck disable=SC2046
+          python3 gen_sitemap_index.py docs-saltproject-io $(python3 docs_targets.py sitemap-majors)
+      - name: Generate robots.txt
+        run: |
+          {
+            echo "User-agent: *"
+            echo "Allow: /"
+            python3 docs_targets.py robots-disallow | while read -r major; do
+              echo "Disallow: /en/${major}/"
+            done
+            echo "Sitemap: https://docs.saltproject.io/sitemap.xml"
+          } > docs-saltproject-io/robots.txt
       - name: Create tarball of docs
         run: |
           tar cvzf docs-saltproject-io.tar.gz docs-saltproject-io
